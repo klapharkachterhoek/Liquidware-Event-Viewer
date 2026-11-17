@@ -6,5 +6,6 @@
         "Liquidware Events and Metrics Service"
     ],
     "HoursBack": 24,
-    "MaxEvents": 500
+    "MaxEvents": 500,
+    "DarkMode": false
 }

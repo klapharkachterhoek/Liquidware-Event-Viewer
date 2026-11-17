@@ -13,6 +13,7 @@ PowerShell-tool met grafische interface (WPF) om eventlogs van een of meer serve
 - Automatische herkenning van de applicatie (pad of bestandsnaam zoals `.exe`, `.bat`, `.ps1`) in de berichttekst
 - **Overzicht per applicatie**: aantal blokkades, servers, bronnen, eerste en laatste keer
 - Export naar CSV (met puntkomma's, geschikt voor Nederlandse Excel)
+- **Donkere modus** via een schakelaar in het hoofdvenster (wordt onthouden)
 - Configuratiescherm voor servers, bronnen, standaardperiode en maximum aantal events; wordt opgeslagen in `LiquidwareEventViewer.json` en direct geladen
 
 ## Bestanden
@@ -40,7 +41,8 @@ PowerShell-tool met grafische interface (WPF) om eventlogs van een of meer serve
     "Servers":   [ "server01", "server02" ],
     "Sources":   [ "liquidware application restriction", "Liquidware data service", "Liquidware Events and Metrics Service" ],
     "HoursBack": 24,
-    "MaxEvents": 500
+    "MaxEvents": 500,
+    "DarkMode":  false
 }
 ```
 

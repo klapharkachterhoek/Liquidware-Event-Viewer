@@ -32,6 +32,7 @@ function Get-DefaultConfig {
         )
         HoursBack = 24
         MaxEvents = 500
+        DarkMode  = $false
     }
 }
 
@@ -41,6 +42,7 @@ function Save-Config($Cfg) {
         Sources   = @($Cfg.Sources)
         HoursBack = [int]$Cfg.HoursBack
         MaxEvents = [int]$Cfg.MaxEvents
+        DarkMode  = [bool]$Cfg.DarkMode
     }
     $obj | ConvertTo-Json -Depth 3 | Set-Content -Path $ConfigPath -Encoding UTF8
 }
@@ -56,6 +58,7 @@ function Read-Config {
                 Sources   = @($c.Sources | Where-Object { $_ })
                 HoursBack = $hours
                 MaxEvents = $max
+                DarkMode  = [bool]$c.DarkMode
             }
         } catch {
             [System.Windows.MessageBox]::Show(
@@ -99,6 +102,232 @@ function New-Xaml([string]$Xaml) {
 }
 
 # ---------------------------------------------------------------------------
+# Thema (licht / donker)
+# ---------------------------------------------------------------------------
+$Palettes = @{
+    Light = @{
+        Bg = '#F3F3F3'; PanelBg = '#E9E9E9'; ControlBg = '#FFFFFF'; Fg = '#1E1E1E'; SubtleFg = '#6E6E6E'
+        BorderBr = '#ABADB3'; AltRow = '#F3F6FA'; HeaderBg = '#EDEFF2'; GridLine = '#E3E3E3'
+        Hover = '#E5F1FB'; SelBg = '#CCE4F7'; Accent = '#0078D4'
+    }
+    Dark = @{
+        Bg = '#1E1E1E'; PanelBg = '#2D2D30'; ControlBg = '#252526'; Fg = '#E6E6E6'; SubtleFg = '#9A9A9A'
+        BorderBr = '#3F3F46'; AltRow = '#2D2D30'; HeaderBg = '#333337'; GridLine = '#3A3A3A'
+        Hover = '#3E3E40'; SelBg = '#094771'; Accent = '#3794FF'
+    }
+}
+
+# Stijlen gebruiken DynamicResource, zodat wisselen van thema direct zichtbaar is
+$StylesXaml = @'
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <Style TargetType="GroupBox">
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+  </Style>
+
+  <Style TargetType="StatusBar">
+    <Setter Property="Background" Value="{DynamicResource PanelBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+  </Style>
+
+  <Style TargetType="CheckBox">
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+  </Style>
+
+  <Style TargetType="TextBox">
+    <Setter Property="Background" Value="{DynamicResource ControlBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+    <Setter Property="CaretBrush" Value="{DynamicResource Fg}"/>
+    <Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
+    <Setter Property="Padding" Value="2,1"/>
+  </Style>
+
+  <Style TargetType="Button">
+    <Setter Property="Background" Value="{DynamicResource ControlBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="1" CornerRadius="2">
+            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Hover}"/>
+              <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelBg}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <ControlTemplate x:Key="ComboToggle" TargetType="ToggleButton">
+    <Border x:Name="Bd" Background="{DynamicResource ControlBg}" BorderBrush="{DynamicResource BorderBr}" BorderThickness="1">
+      <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0"
+            Data="M0,0 L4,4 L8,0 Z" Fill="{DynamicResource Fg}"/>
+    </Border>
+    <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+      </Trigger>
+    </ControlTemplate.Triggers>
+  </ControlTemplate>
+
+  <Style TargetType="ComboBox">
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="MinHeight" Value="22"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ComboBox">
+          <Grid>
+            <ToggleButton Template="{StaticResource ComboToggle}" Focusable="False" ClickMode="Press"
+                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"/>
+            <ContentPresenter IsHitTestVisible="False" Margin="6,2,22,2" VerticalAlignment="Center"
+                              Content="{TemplateBinding SelectionBoxItem}"
+                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"/>
+            <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"
+                   Focusable="False" PopupAnimation="Slide">
+              <Border MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                      Background="{DynamicResource ControlBg}" BorderBrush="{DynamicResource BorderBr}" BorderThickness="1">
+                <ScrollViewer>
+                  <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                </ScrollViewer>
+              </Border>
+            </Popup>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="ComboBoxItem">
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ComboBoxItem">
+          <Border x:Name="Bd" Background="Transparent" Padding="6,3">
+            <ContentPresenter/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelBg}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="ListBox">
+    <Setter Property="Background" Value="{DynamicResource ControlBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+  </Style>
+
+  <Style TargetType="ListBoxItem">
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ListBoxItem">
+          <Border x:Name="Bd" Background="Transparent" Padding="4,2">
+            <ContentPresenter/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Hover}"/>
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelBg}"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="DataGrid">
+    <Setter Property="Background" Value="{DynamicResource ControlBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+    <Setter Property="RowBackground" Value="{DynamicResource ControlBg}"/>
+    <Setter Property="AlternatingRowBackground" Value="{DynamicResource AltRow}"/>
+    <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource GridLine}"/>
+    <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource GridLine}"/>
+  </Style>
+
+  <Style TargetType="DataGridColumnHeader">
+    <Setter Property="Background" Value="{DynamicResource HeaderBg}"/>
+    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource BorderBr}"/>
+    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+    <Setter Property="Padding" Value="6,4"/>
+  </Style>
+
+  <Style TargetType="DataGridCell">
+    <Setter Property="BorderThickness" Value="0"/>
+    <Style.Triggers>
+      <Trigger Property="IsSelected" Value="True">
+        <Setter Property="Background" Value="{DynamicResource SelBg}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource SelBg}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+</ResourceDictionary>
+'@
+
+# Donkere titelbalk (Windows 10 20H1+ / Windows 11); wordt genegeerd als het niet lukt
+try {
+    if (-not ('LwEventViewer.Dwm' -as [type])) {
+        Add-Type -Namespace LwEventViewer -Name Dwm -ErrorAction Stop -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int value, int size);
+'@
+    }
+} catch { }
+
+function Set-TitleBarTheme($Win) {
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper $Win).Handle
+        if ($h -eq [IntPtr]::Zero) { return }
+        $v = [int][bool]$script:Config.DarkMode
+        [void][LwEventViewer.Dwm]::DwmSetWindowAttribute($h, 20, [ref]$v, 4)
+    } catch { }
+}
+
+function Set-ThemeBrushes($Win) {
+    $p = if ($script:Config.DarkMode) { $Palettes.Dark } else { $Palettes.Light }
+    foreach ($k in $p.Keys) {
+        $color = [System.Windows.Media.ColorConverter]::ConvertFromString($p[$k])
+        $brush = New-Object System.Windows.Media.SolidColorBrush $color
+        $brush.Freeze()
+        $Win.Resources[$k] = $brush
+    }
+    Set-TitleBarTheme $Win
+}
+
+function Initialize-Theme($Win) {
+    $Win.Resources.MergedDictionaries.Add([Windows.Markup.XamlReader]::Parse($StylesXaml))
+    $Win.SetResourceReference([System.Windows.Window]::BackgroundProperty, 'Bg')
+    $Win.SetResourceReference([System.Windows.Window]::ForegroundProperty, 'Fg')
+    Set-ThemeBrushes $Win
+    $Win.Add_SourceInitialized({ param($sender, $e) Set-TitleBarTheme $sender })
+}
+
+# ---------------------------------------------------------------------------
 # Hoofdvenster
 # ---------------------------------------------------------------------------
 $MainXaml = @'
@@ -138,6 +367,7 @@ $MainXaml = @'
           <Button x:Name="ConfigButton"  Content="Configuratie..."     Padding="12,4" Margin="6,0,0,0"/>
           <Button x:Name="SummaryButton" Content="Overzicht per applicatie" Padding="12,4" Margin="6,0,0,0"/>
           <Button x:Name="ExportButton"  Content="Exporteren (CSV)"    Padding="12,4" Margin="6,0,0,0"/>
+          <CheckBox x:Name="DarkModeBox" Content="Donkere modus" VerticalAlignment="Center" Margin="16,0,0,0"/>
         </StackPanel>
       </Grid>
     </GroupBox>
@@ -163,7 +393,7 @@ $MainXaml = @'
 
       <DataGrid x:Name="EventGrid" AutoGenerateColumns="False" IsReadOnly="True"
                 SelectionMode="Single" CanUserSortColumns="True"
-                AlternatingRowBackground="#F3F6FA" GridLinesVisibility="Horizontal"
+                GridLinesVisibility="Horizontal"
                 HeadersVisibility="Column">
         <DataGrid.Columns>
           <DataGridTextColumn Header="Tijd"       Binding="{Binding Tijd}"       Width="135"/>
@@ -176,7 +406,7 @@ $MainXaml = @'
         </DataGrid.Columns>
       </DataGrid>
 
-      <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch" Background="#DDD"/>
+      <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch" Background="{DynamicResource BorderBr}"/>
 
       <TextBox x:Name="DetailBox" Grid.Row="2" IsReadOnly="True" TextWrapping="Wrap"
                VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
@@ -188,9 +418,11 @@ $MainXaml = @'
 $window = New-Xaml $MainXaml
 foreach ($name in 'StatusText','ServerPanel','SourcePanel','PeriodBox','MaxEventsBox','FetchButton',
                   'ConfigButton','SummaryButton','ExportButton','SourceFilterBox','ServerFilterBox',
-                  'LevelFilterBox','SearchBox','AppOnlyBox','EventGrid','DetailBox') {
+                  'LevelFilterBox','SearchBox','AppOnlyBox','EventGrid','DetailBox','DarkModeBox') {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
 }
+Initialize-Theme $window
+$DarkModeBox.IsChecked = [bool]$script:Config.DarkMode
 
 $script:Results = New-Object System.Collections.ObjectModel.ObservableCollection[object]
 $script:View    = $null
@@ -430,7 +662,7 @@ $ConfigXaml = @'
     </StackPanel>
 
     <DockPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,12,0,0" LastChildFill="False">
-      <TextBlock x:Name="PathText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="Gray" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
+      <TextBlock x:Name="PathText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource SubtleFg}" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
       <Button x:Name="CancelBtn" Content="Annuleren" DockPanel.Dock="Right" Padding="14,4" Margin="6,0,0,0" IsCancel="True"/>
       <Button x:Name="SaveBtn" Content="Opslaan" DockPanel.Dock="Right" Padding="14,4" FontWeight="SemiBold"/>
     </DockPanel>
@@ -438,87 +670,89 @@ $ConfigXaml = @'
 </Window>
 '@
 
+function Add-ListItem($Collection, $TextBox) {
+    $v = $TextBox.Text.Trim()
+    if (-not $v) { return }
+    foreach ($existing in $Collection) {
+        if ($existing -ieq $v) { $TextBox.Clear(); return }
+    }
+    $Collection.Add($v)
+    $TextBox.Clear()
+    $TextBox.Focus() | Out-Null
+}
+
+function Remove-ListItems($Collection, $ListBox) {
+    foreach ($sel in @($ListBox.SelectedItems)) { [void]$Collection.Remove($sel) }
+}
+
+function Save-ConfigFromDialog {
+    $c = $script:Cfg
+    $h = 0; $m = 0
+    if (-not [int]::TryParse($c.DefaultHoursBox.Text, [ref]$h) -or $h -lt 1) {
+        [System.Windows.MessageBox]::Show('Vul een geldig aantal uren in (1 of hoger).', 'Configuratie') | Out-Null; return
+    }
+    if (-not [int]::TryParse($c.DefaultMaxBox.Text, [ref]$m) -or $m -lt 1) {
+        [System.Windows.MessageBox]::Show('Vul een geldig maximum aantal events in (1 of hoger).', 'Configuratie') | Out-Null; return
+    }
+    $new = [pscustomobject]@{
+        Servers   = @($c.ServerItems)
+        Sources   = @($c.SourceItems)
+        HoursBack = $h
+        MaxEvents = $m
+        DarkMode  = [bool]$script:Config.DarkMode
+    }
+    try {
+        Save-Config $new
+    } catch {
+        [System.Windows.MessageBox]::Show("Opslaan mislukt:`n$($_.Exception.Message)", 'Configuratie', 'OK', 'Error') | Out-Null
+        return
+    }
+    $c.Saved = $true
+    $c.Dlg.Close()
+}
+
 function Show-ConfigDialog {
     $dlg = New-Xaml $ConfigXaml
     $dlg.Owner = $window
-    $c = @{}
+    Initialize-Theme $dlg
+
+    # Status van de dialoog in script-scope, zodat de event handlers erbij kunnen
+    $c = @{ Dlg = $dlg; Saved = $false }
     foreach ($n in 'RemoveServerBtn','AddServerBtn','NewServerBox','ServerList','RemoveSourceBtn','AddSourceBtn',
                    'NewSourceBox','SourceList','DefaultHoursBox','DefaultMaxBox','PathText','CancelBtn','SaveBtn') {
         $c[$n] = $dlg.FindName($n)
     }
-
-    $serverItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
-    $sourceItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
-    foreach ($s in $script:Config.Servers) { $serverItems.Add($s) }
-    foreach ($s in $script:Config.Sources) { $sourceItems.Add($s) }
-    $c.ServerList.ItemsSource = $serverItems
-    $c.SourceList.ItemsSource = $sourceItems
+    $c.ServerItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
+    $c.SourceItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
+    foreach ($s in $script:Config.Servers) { $c.ServerItems.Add($s) }
+    foreach ($s in $script:Config.Sources) { $c.SourceItems.Add($s) }
+    $c.ServerList.ItemsSource = $c.ServerItems
+    $c.SourceList.ItemsSource = $c.SourceItems
     $c.DefaultHoursBox.Text = [string]$script:Config.HoursBack
     $c.DefaultMaxBox.Text   = [string]$script:Config.MaxEvents
     $c.PathText.Text        = "Opgeslagen in: $ConfigPath"
     $c.PathText.ToolTip     = $ConfigPath
+    $script:Cfg = $c
 
-    $addItem = {
-        param($Collection, $TextBox)
-        $v = $TextBox.Text.Trim()
-        if (-not $v) { return }
-        foreach ($existing in $Collection) {
-            if ($existing -ieq $v) { $TextBox.Clear(); return }
-        }
-        $Collection.Add($v)
-        $TextBox.Clear()
-        $TextBox.Focus() | Out-Null
-    }
-    $removeItems = {
-        param($Collection, $ListBox)
-        foreach ($sel in @($ListBox.SelectedItems)) { [void]$Collection.Remove($sel) }
-    }
-
-    $c.AddServerBtn.Add_Click({ & $addItem $serverItems $c.NewServerBox }.GetNewClosure())
-    $c.AddSourceBtn.Add_Click({ & $addItem $sourceItems $c.NewSourceBox }.GetNewClosure())
-    $c.RemoveServerBtn.Add_Click({ & $removeItems $serverItems $c.ServerList }.GetNewClosure())
-    $c.RemoveSourceBtn.Add_Click({ & $removeItems $sourceItems $c.SourceList }.GetNewClosure())
-    $c.NewServerBox.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Return') { & $addItem $serverItems $c.NewServerBox } }.GetNewClosure())
-    $c.NewSourceBox.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Return') { & $addItem $sourceItems $c.NewSourceBox } }.GetNewClosure())
-    $c.ServerList.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Delete') { & $removeItems $serverItems $c.ServerList } }.GetNewClosure())
-    $c.SourceList.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Delete') { & $removeItems $sourceItems $c.SourceList } }.GetNewClosure())
-
-    $result = @{ Saved = $false }
-    $c.SaveBtn.Add_Click({
-        $h = 0; $m = 0
-        if (-not [int]::TryParse($c.DefaultHoursBox.Text, [ref]$h) -or $h -lt 1) {
-            [System.Windows.MessageBox]::Show('Vul een geldig aantal uren in (1 of hoger).', 'Configuratie') | Out-Null; return
-        }
-        if (-not [int]::TryParse($c.DefaultMaxBox.Text, [ref]$m) -or $m -lt 1) {
-            [System.Windows.MessageBox]::Show('Vul een geldig maximum aantal events in (1 of hoger).', 'Configuratie') | Out-Null; return
-        }
-        $new = [pscustomobject]@{
-            Servers   = @($serverItems)
-            Sources   = @($sourceItems)
-            HoursBack = $h
-            MaxEvents = $m
-        }
-        try {
-            Save-Config $new
-        } catch {
-            [System.Windows.MessageBox]::Show("Opslaan mislukt:`n$($_.Exception.Message)", 'Configuratie', 'OK', 'Error') | Out-Null
-            return
-        }
-        # Let op: binnen een GetNewClosure()-scriptblock verwijst $script: niet naar
-        # het hoofdscript. Daarom alleen de vlag zetten; het herladen gebeurt hieronder.
-        $result.Saved = $true
-        $dlg.Close()
-    }.GetNewClosure())
-    $c.CancelBtn.Add_Click({ $dlg.Close() }.GetNewClosure())
+    $c.AddServerBtn.Add_Click({ Add-ListItem $script:Cfg.ServerItems $script:Cfg.NewServerBox })
+    $c.AddSourceBtn.Add_Click({ Add-ListItem $script:Cfg.SourceItems $script:Cfg.NewSourceBox })
+    $c.RemoveServerBtn.Add_Click({ Remove-ListItems $script:Cfg.ServerItems $script:Cfg.ServerList })
+    $c.RemoveSourceBtn.Add_Click({ Remove-ListItems $script:Cfg.SourceItems $script:Cfg.SourceList })
+    $c.NewServerBox.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Return') { Add-ListItem $script:Cfg.ServerItems $script:Cfg.NewServerBox } })
+    $c.NewSourceBox.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Return') { Add-ListItem $script:Cfg.SourceItems $script:Cfg.NewSourceBox } })
+    $c.ServerList.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Delete') { Remove-ListItems $script:Cfg.ServerItems $script:Cfg.ServerList } })
+    $c.SourceList.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Delete') { Remove-ListItems $script:Cfg.SourceItems $script:Cfg.SourceList } })
+    $c.SaveBtn.Add_Click({ Save-ConfigFromDialog })
+    $c.CancelBtn.Add_Click({ $script:Cfg.Dlg.Close() })
 
     $c.NewServerBox.Focus() | Out-Null
     [void]$dlg.ShowDialog()
 
-    if ($result.Saved) {
+    if ($c.Saved) {
         # Nieuwe waarden direct opnieuw inladen uit het JSON-bestand
         $script:Config = Read-Config
     }
-    return $result.Saved
+    return $c.Saved
 }
 
 # ---------------------------------------------------------------------------
@@ -555,15 +789,18 @@ function Show-Summary {
       <Button x:Name="ExportSumBtn" Content="Exporteren (CSV)" DockPanel.Dock="Right" Padding="12,4" Margin="0,0,6,0"/>
     </DockPanel>
     <DataGrid x:Name="SumGrid" IsReadOnly="True" AutoGenerateColumns="True"
-              AlternatingRowBackground="#F3F6FA" GridLinesVisibility="Horizontal" HeadersVisibility="Column"/>
+              GridLinesVisibility="Horizontal" HeadersVisibility="Column"/>
   </DockPanel>
 </Window>
 '@
     $sw = New-Xaml $sx
     $sw.Owner = $window
-    $sw.FindName('SumGrid').ItemsSource = @($rows)
-    $sw.FindName('CloseBtn').Add_Click({ $sw.Close() }.GetNewClosure())
-    $sw.FindName('ExportSumBtn').Add_Click({ Export-Rows $rows 'Liquidware-applicaties' }.GetNewClosure())
+    Initialize-Theme $sw
+    $script:SumWin  = $sw
+    $script:SumRows = @($rows)
+    $sw.FindName('SumGrid').ItemsSource = $script:SumRows
+    $sw.FindName('CloseBtn').Add_Click({ $script:SumWin.Close() })
+    $sw.FindName('ExportSumBtn').Add_Click({ Export-Rows $script:SumRows 'Liquidware-applicaties' })
     [void]$sw.ShowDialog()
 }
 
@@ -598,6 +835,12 @@ $ConfigButton.Add_Click({
 })
 
 $SummaryButton.Add_Click({ Show-Summary })
+
+$DarkModeBox.Add_Click({
+    $script:Config.DarkMode = [bool]$DarkModeBox.IsChecked
+    Set-ThemeBrushes $window
+    try { Save-Config $script:Config } catch { }
+})
 
 $ExportButton.Add_Click({
     $visible = Get-VisibleItems
