@@ -217,6 +217,39 @@ function Import-PuConfig([string]$Path) {
     if ($script:PuHasAllow) { $script:PuInfo += '  |  whitelist-modus: alles wat niet is toegestaan wordt geweigerd' }
 }
 
+# Reden van blokkade zoals Liquidware die zelf in het event zet
+function Get-EventReason([string]$Message, [int]$Id) {
+    if ($Message -match 'DenyList' -or $Id -eq 5003)    { return 'DenyList Match' }
+    if ($Message -match 'AllowList' -or $Id -eq 5002)   { return 'AllowList Violation' }
+    return ''
+}
+
+# Combineert de reden uit het event met de beoordeling op basis van de gekozen configuratie
+function Get-CombinedStatus([string]$App, [string]$Reason) {
+    $pu    = Get-PuStatus $App
+    $lijst = [string]$pu.Lijst
+    $regel = [string]$pu.Regel
+    $loaded = $script:PuRules.Count -gt 0
+
+    if ($Reason -eq 'DenyList Match') {
+        if ($lijst -notmatch 'Blacklist') {
+            $lijst = 'Blacklist (volgens event)'
+            if ($loaded) {
+                $note = 'Geen passende Deny-regel in de gekozen configuratie (andere configuratie actief op deze server?)'
+                $regel = (@($regel, $note) | Where-Object { $_ }) -join '; '
+            }
+        }
+    } elseif ($Reason -eq 'AllowList Violation') {
+        if (-not $lijst) {
+            $lijst = 'Niet op whitelist (volgens event)'
+        } elseif ($lijst -eq 'Whitelist') {
+            $lijst = 'Whitelist, toch geblokkeerd'
+            $regel += '; Controleer het filter van de regel of of de regel pas na dit event is toegevoegd'
+        }
+    }
+    return @{ Lijst = $lijst; Regel = $regel }
+}
+
 function Format-PuRule($Rule) {
     $act = if ($Rule.Action -eq 0) { 'Allow' } else { 'Deny' }
     $txt = "#$($Rule.Sequence) $act $($PuMatchNames[$Rule.Match]) '$($Rule.Value)'"
@@ -227,7 +260,7 @@ function Format-PuRule($Rule) {
 
 function Get-PuStatus([string]$App) {
     if ($script:PuRules.Count -eq 0) { return @{ Lijst = ''; Regel = '' } }
-    if ([string]::IsNullOrWhiteSpace($App)) { return @{ Lijst = 'Geen applicatie herkend'; Regel = '' } }
+    if ([string]::IsNullOrWhiteSpace($App)) { return @{ Lijst = ''; Regel = '' } }
 
     $key = $App.ToLowerInvariant()
     if ($script:PuCache.ContainsKey($key)) { return $script:PuCache[$key] }
@@ -757,7 +790,8 @@ function Invoke-Fetch {
                             $msg = (@($e.Properties | ForEach-Object { $_.Value }) -join ' | ')
                         }
                         $app = Get-AppFromMessage $msg
-                        $pu  = Get-PuStatus $app
+                        $reason = Get-EventReason $msg $e.Id
+                        $pu  = Get-CombinedStatus $app $reason
                         $list.Add([pscustomobject]@{
                             Tijd         = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
                             Server       = $server
@@ -765,6 +799,7 @@ function Invoke-Fetch {
                             Niveau       = $e.LevelDisplayName
                             EventID      = $e.Id
                             Applicatie   = $app
+                            Reden        = $reason
                             Lijst        = $pu.Lijst
                             Regel        = $pu.Regel
                             Samenvatting = Get-FirstLine $msg
@@ -1091,7 +1126,7 @@ function Set-ActivePuConfig {
     $PuInfoText.Text = $script:PuInfo
     # Bestaande resultaten opnieuw beoordelen
     foreach ($item in $script:Results) {
-        $s = Get-PuStatus $item.Applicatie
+        $s = Get-CombinedStatus $item.Applicatie $item.Reden
         $item.Lijst = $s.Lijst
         $item.Regel = $s.Regel
     }
@@ -1126,7 +1161,7 @@ $DarkModeBox.Add_Click({
 $ExportButton.Add_Click({
     $visible = Get-VisibleItems
     if ($visible.Count -eq 0) { [System.Windows.MessageBox]::Show('Er is niets om te exporteren.', 'Export') | Out-Null; return }
-    Export-Rows ($visible | Select-Object Tijd, Server, Bron, Niveau, EventID, Applicatie, Lijst, Regel, Logboek, Bericht) 'Liquidware-events'
+    Export-Rows ($visible | Select-Object Tijd, Server, Bron, Niveau, EventID, Applicatie, Reden, Lijst, Regel, Logboek, Bericht) 'Liquidware-events'
 })
 
 $SourceFilterBox.Add_SelectionChanged({ Invoke-Refilter })
@@ -1149,7 +1184,7 @@ $AppOnlyBox.Add_Click({ Invoke-Refilter })
 $EventGrid.Add_SelectionChanged({
     $sel = $EventGrid.SelectedItem
     if ($sel) {
-        $DetailBox.Text = "Tijd:       $($sel.Tijd)`r`nServer:     $($sel.Server)`r`nBron:       $($sel.Bron)`r`nLogboek:    $($sel.Logboek)`r`nNiveau:     $($sel.Niveau)`r`nEvent ID:   $($sel.EventID)`r`nApplicatie: $($sel.Applicatie)`r`nLijst:      $($sel.Lijst)`r`nRegel(s):   $($sel.Regel)`r`n`r`n$($sel.Bericht)"
+        $DetailBox.Text = "Tijd:       $($sel.Tijd)`r`nServer:     $($sel.Server)`r`nBron:       $($sel.Bron)`r`nLogboek:    $($sel.Logboek)`r`nNiveau:     $($sel.Niveau)`r`nEvent ID:   $($sel.EventID)`r`nApplicatie: $($sel.Applicatie)`r`nReden:      $($sel.Reden)`r`nLijst:      $($sel.Lijst)`r`nRegel(s):   $($sel.Regel)`r`n`r`n$($sel.Bericht)"
     } else {
         $DetailBox.Text = ''
     }

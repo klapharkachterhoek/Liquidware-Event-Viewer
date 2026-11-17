@@ -49,6 +49,9 @@ De tool leest de sectie `ApplicationRestrictions` en vergelijkt het pad uit het 
 | Alleen uitgeschakelde regel | Er past alleen een regel die is uitgeschakeld |
 | Niet op whitelist | Geen passende regel, terwijl de configuratie Allow-regels bevat (ProfileUnity weigert dan alles wat niet is toegestaan) |
 | Niet in configuratie | Geen passende regel en geen whitelist-modus |
+| Blacklist (volgens event) | Liquidware meldt *DenyList Match* (event 5003), maar er is geen passende Deny-regel in de gekozen configuratie (of er is geen configuratie gekozen) |
+| Niet op whitelist (volgens event) | Liquidware meldt *AllowList Violation* (event 5002) en er is geen configuratie gekozen |
+| Whitelist, toch geblokkeerd | Liquidware meldt *AllowList Violation*, terwijl er wel een Allow-regel past (controleer het filter of de datum van de regel) |
 
 Match-types: Contains, Equals, Starts With en Ends With worden gecontroleerd; omgevingsvariabelen zoals `%SystemRoot%` worden uitgevouwen. **Hash** en **Signed** kunnen niet uit een event worden afgeleid en worden niet gecontroleerd. Filters (bijv. AD-groepen) worden getoond in de kolom *Regel*, maar niet geëvalueerd.
 
