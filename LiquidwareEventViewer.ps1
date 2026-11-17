@@ -311,10 +311,11 @@ function Set-TitleBarTheme($Win) {
 function Set-ThemeBrushes($Win) {
     $p = if ($script:Config.DarkMode) { $Palettes.Dark } else { $Palettes.Light }
     foreach ($k in $p.Keys) {
-        $color = [System.Windows.Media.ColorConverter]::ConvertFromString($p[$k])
-        $brush = New-Object System.Windows.Media.SolidColorBrush $color
+        $color = [System.Windows.Media.Color][System.Windows.Media.ColorConverter]::ConvertFromString($p[$k])
+        $brush = [System.Windows.Media.SolidColorBrush]::new($color)
         $brush.Freeze()
-        $Win.Resources[$k] = $brush
+        # Het echte .NET-object doorgeven (geen PSObject-wrapper), anders weigert WPF de brush
+        $Win.Resources[$k] = $brush.PSObject.BaseObject
     }
     Set-TitleBarTheme $Win
 }
