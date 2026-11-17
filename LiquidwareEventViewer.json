@@ -7,5 +7,7 @@
     ],
     "HoursBack": 24,
     "MaxEvents": 500,
-    "DarkMode": false
+    "DarkMode": false,
+    "ProfileUnityConfigs": [],
+    "ActiveProfileUnityConfig": ""
 }

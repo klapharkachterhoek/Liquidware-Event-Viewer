@@ -13,6 +13,7 @@ PowerShell-tool met grafische interface (WPF) om eventlogs van een of meer serve
 - Automatische herkenning van de applicatie (pad of bestandsnaam zoals `.exe`, `.bat`, `.ps1`) in de berichttekst
 - **Overzicht per applicatie**: aantal blokkades, servers, bronnen, eerste en laatste keer
 - Export naar CSV (met puntkomma's, geschikt voor Nederlandse Excel)
+- **Koppeling met de ProfileUnity-configuratie**: kies een JSON-export van je ProfileUnity-configuratie en zie per geblokkeerde applicatie of die op de whitelist (Allow) of blacklist (Deny) staat, en welke regel(s) er van toepassing zijn
 - **Donkere modus** via een schakelaar in het hoofdvenster (wordt onthouden)
 - Configuratiescherm voor servers, bronnen, standaardperiode en maximum aantal events; wordt opgeslagen in `LiquidwareEventViewer.json` en direct geladen
 
@@ -34,6 +35,23 @@ PowerShell-tool met grafische interface (WPF) om eventlogs van een of meer serve
 3. Voeg via **Configuratie...** je servers toe en klik op **Opslaan**.
 4. Kies servers, bronnen en periode, en klik op **Events ophalen**.
 
+## ProfileUnity-configuratie
+
+Exporteer de configuratie in de ProfileUnity-console als JSON en voeg het bestand toe via **Configuratie... > ProfileUnity-configuraties > Bladeren...**. Kies daarna in het hoofdvenster bij **ProfileUnity-configuratie** welke export je gebruikt.
+
+De tool leest de sectie `ApplicationRestrictions` en vergelijkt het pad uit het event met elke regel:
+
+| Kolom *Lijst* | Betekenis |
+|---|---|
+| Whitelist | Er is een actieve Allow-regel die past |
+| Blacklist | Er is een actieve Deny-regel die past |
+| Whitelist + Blacklist | Er passen zowel Allow- als Deny-regels (kijk naar de filters in *Regel*) |
+| Alleen uitgeschakelde regel | Er past alleen een regel die is uitgeschakeld |
+| Niet op whitelist | Geen passende regel, terwijl de configuratie Allow-regels bevat (ProfileUnity weigert dan alles wat niet is toegestaan) |
+| Niet in configuratie | Geen passende regel en geen whitelist-modus |
+
+Match-types: Contains, Equals, Starts With en Ends With worden gecontroleerd; omgevingsvariabelen zoals `%SystemRoot%` worden uitgevouwen. **Hash** en **Signed** kunnen niet uit een event worden afgeleid en worden niet gecontroleerd. Filters (bijv. AD-groepen) worden getoond in de kolom *Regel*, maar niet geëvalueerd.
+
 ## Configuratie
 
 ```json
@@ -42,7 +60,9 @@ PowerShell-tool met grafische interface (WPF) om eventlogs van een of meer serve
     "Sources":   [ "liquidware application restriction", "Liquidware data service", "Liquidware Events and Metrics Service" ],
     "HoursBack": 24,
     "MaxEvents": 500,
-    "DarkMode":  false
+    "DarkMode":  false,
+    "ProfileUnityConfigs": [ "D:\\beheer\\Configuration-CTX-Test.json" ],
+    "ActiveProfileUnityConfig": "D:\\beheer\\Configuration-CTX-Test.json"
 }
 ```
 

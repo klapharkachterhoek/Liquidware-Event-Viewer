@@ -33,6 +33,8 @@ function Get-DefaultConfig {
         HoursBack = 24
         MaxEvents = 500
         DarkMode  = $false
+        ProfileUnityConfigs      = @()
+        ActiveProfileUnityConfig = ''
     }
 }
 
@@ -43,6 +45,8 @@ function Save-Config($Cfg) {
         HoursBack = [int]$Cfg.HoursBack
         MaxEvents = [int]$Cfg.MaxEvents
         DarkMode  = [bool]$Cfg.DarkMode
+        ProfileUnityConfigs      = @($Cfg.ProfileUnityConfigs)
+        ActiveProfileUnityConfig = [string]$Cfg.ActiveProfileUnityConfig
     }
     $obj | ConvertTo-Json -Depth 3 | Set-Content -Path $ConfigPath -Encoding UTF8
 }
@@ -59,6 +63,8 @@ function Read-Config {
                 HoursBack = $hours
                 MaxEvents = $max
                 DarkMode  = [bool]$c.DarkMode
+                ProfileUnityConfigs      = @($c.ProfileUnityConfigs | Where-Object { $_ })
+                ActiveProfileUnityConfig = [string]$c.ActiveProfileUnityConfig
             }
         } catch {
             [System.Windows.MessageBox]::Show(
@@ -99,6 +105,162 @@ function New-Xaml([string]$Xaml) {
     [xml]$x = $Xaml
     $reader = New-Object System.Xml.XmlNodeReader $x
     return [Windows.Markup.XamlReader]::Load($reader)
+}
+
+# ---------------------------------------------------------------------------
+# ProfileUnity-configuratie (Application Restrictions)
+# ---------------------------------------------------------------------------
+# ProfileUnity-export: Configurations[].ApplicationRestrictions[]
+#   Action: 0 = Allow (whitelist), 1 = Deny (blacklist)
+#   Match : 0 = Contains, 1 = Equals, 2 = Hash, 3 = Starts With, 4 = Ends With, 5 = Signed
+$PuMatchNames = @{ 0 = 'Contains'; 1 = 'Equals'; 2 = 'Hash'; 3 = 'Starts With'; 4 = 'Ends With'; 5 = 'Signed' }
+
+$script:PuRules    = @()
+$script:PuHasAllow = $false
+$script:PuHasSignedAllow = $false
+$script:PuCache    = @{}
+$script:PuInfo     = ''
+
+function Get-DictValue($Dict, [string]$Key) {
+    if ($null -eq $Dict) { return $null }
+    if ($Dict -is [System.Collections.IDictionary]) {
+        if ($Dict.ContainsKey($Key)) { return $Dict[$Key] }
+        return $null
+    }
+    return $Dict.$Key
+}
+
+function ConvertTo-PuNormPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $p = $Path.Trim().Trim('"').Trim()
+    $p = [Environment]::ExpandEnvironmentVariables($p)
+    $p = $p -replace '/', '\'
+    $p = $p -replace '^\\\\\?\\', ''
+    return $p.ToLowerInvariant()
+}
+
+function Get-LeafName([string]$Path) {
+    $i = $Path.LastIndexOf('\')
+    if ($i -ge 0) { return $Path.Substring($i + 1) }
+    return $Path
+}
+
+function Import-PuConfig([string]$Path) {
+    $script:PuRules    = @()
+    $script:PuHasAllow = $false
+    $script:PuHasSignedAllow = $false
+    $script:PuCache    = @{}
+    $script:PuInfo     = ''
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $script:PuInfo = 'Bestand niet gevonden'
+        return
+    }
+    try {
+        # JavaScriptSerializer i.p.v. ConvertFrom-Json: sneller en geen limiet bij grote exports
+        Add-Type -AssemblyName System.Web.Extensions
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $ser.MaxJsonLength = [int]::MaxValue
+        $root = $ser.DeserializeObject((Get-Content -LiteralPath $Path -Raw -Encoding UTF8))
+    } catch {
+        $script:PuInfo = 'Kon bestand niet lezen'
+        [System.Windows.MessageBox]::Show("ProfileUnity-configuratie kon niet worden gelezen:`n$Path`n`n$($_.Exception.Message)",
+            'ProfileUnity-configuratie', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $configs = @(Get-DictValue $root 'Configurations')
+    if ($configs.Count -eq 0 -or $null -eq $configs[0]) {
+        if ($null -ne (Get-DictValue $root 'ApplicationRestrictions')) { $configs = @($root) } else { $configs = @() }
+    }
+
+    $rules = New-Object System.Collections.Generic.List[object]
+    foreach ($cfg in $configs) {
+        $cfgName = [string](Get-DictValue $cfg 'Name')
+        foreach ($r in @(Get-DictValue $cfg 'ApplicationRestrictions')) {
+            if ($null -eq $r) { continue }
+            $filter     = Get-DictValue $r 'Filter'
+            $filterName = ''
+            if ($filter) { $filterName = [string](Get-DictValue $filter 'Name') }
+            $match = [int](Get-DictValue $r 'Match')
+            $value = [string](Get-DictValue $r 'Value')
+            $rule = [pscustomobject]@{
+                Sequence    = [int](Get-DictValue $r 'Sequence')
+                Action      = [int](Get-DictValue $r 'Action')
+                Match       = $match
+                Value       = $value
+                Norm        = $(if ($match -eq 5 -or $match -eq 2) { $value.Trim().ToLowerInvariant() } else { ConvertTo-PuNormPath $value })
+                Description = [string](Get-DictValue $r 'Description')
+                Disabled    = [bool](Get-DictValue $r 'Disabled')
+                Filter      = $filterName
+                Config      = $cfgName
+            }
+            $rules.Add($rule)
+            if ($rule.Action -eq 0 -and -not $rule.Disabled) {
+                $script:PuHasAllow = $true
+                if ($rule.Match -eq 5 -or $rule.Match -eq 2) { $script:PuHasSignedAllow = $true }
+            }
+        }
+    }
+    $script:PuRules = @($rules | Sort-Object Config, Sequence)
+    $active = @($script:PuRules | Where-Object { -not $_.Disabled })
+    $allow  = @($active | Where-Object { $_.Action -eq 0 }).Count
+    $deny   = @($active | Where-Object { $_.Action -eq 1 }).Count
+    $script:PuInfo = "$($script:PuRules.Count) regels ($allow allow, $deny deny actief, $($script:PuRules.Count - $active.Count) uitgeschakeld)"
+    if ($script:PuHasAllow) { $script:PuInfo += '  |  whitelist-modus: alles wat niet is toegestaan wordt geweigerd' }
+}
+
+function Format-PuRule($Rule) {
+    $act = if ($Rule.Action -eq 0) { 'Allow' } else { 'Deny' }
+    $txt = "#$($Rule.Sequence) $act $($PuMatchNames[$Rule.Match]) '$($Rule.Value)'"
+    if ($Rule.Filter)   { $txt += " [filter: $($Rule.Filter)]" }
+    if ($Rule.Disabled) { $txt += ' [uitgeschakeld]' }
+    return $txt
+}
+
+function Get-PuStatus([string]$App) {
+    if ($script:PuRules.Count -eq 0) { return @{ Lijst = ''; Regel = '' } }
+    if ([string]::IsNullOrWhiteSpace($App)) { return @{ Lijst = 'Geen applicatie herkend'; Regel = '' } }
+
+    $key = $App.ToLowerInvariant()
+    if ($script:PuCache.ContainsKey($key)) { return $script:PuCache[$key] }
+
+    $a        = ConvertTo-PuNormPath $App
+    $nameOnly = -not $a.Contains('\')
+    $leaf     = Get-LeafName $a
+    $hits = New-Object System.Collections.Generic.List[object]
+
+    foreach ($r in $script:PuRules) {
+        $v = $r.Norm
+        if (-not $v) { continue }
+        $hit = $false
+        switch ($r.Match) {
+            0 { $hit = $a.Contains($v) }                                        # Contains
+            1 { $hit = ($a -eq $v) -or ($nameOnly -and $leaf -eq (Get-LeafName $v)) }   # Equals
+            3 { $hit = (-not $nameOnly) -and $a.StartsWith($v) }                # Starts With
+            4 { $hit = $a.EndsWith($v) -or ($nameOnly -and $v.EndsWith('\' + $a)) }     # Ends With
+            default { $hit = $false }                                           # Hash/Signed: niet te controleren
+        }
+        if ($hit) { $hits.Add($r) }
+    }
+
+    $allow    = @($hits | Where-Object { $_.Action -eq 0 -and -not $_.Disabled })
+    $deny     = @($hits | Where-Object { $_.Action -eq 1 -and -not $_.Disabled })
+    $disabled = @($hits | Where-Object { $_.Disabled })
+
+    if ($deny.Count -gt 0 -and $allow.Count -gt 0) { $lijst = 'Whitelist + Blacklist' }
+    elseif ($deny.Count -gt 0)                     { $lijst = 'Blacklist' }
+    elseif ($allow.Count -gt 0)                    { $lijst = 'Whitelist' }
+    elseif ($disabled.Count -gt 0)                 { $lijst = 'Alleen uitgeschakelde regel' }
+    elseif ($script:PuHasAllow) {
+        $lijst = 'Niet op whitelist'
+        if ($script:PuHasSignedAllow) { $lijst += ' (Signed/Hash niet gecontroleerd)' }
+    }
+    else { $lijst = 'Niet in configuratie' }
+
+    $result = @{ Lijst = $lijst; Regel = (($hits | ForEach-Object { Format-PuRule $_ }) -join '; ') }
+    $script:PuCache[$key] = $result
+    return $result
 }
 
 # ---------------------------------------------------------------------------
@@ -351,6 +513,7 @@ $MainXaml = @'
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock Text="Servers:" FontWeight="SemiBold" Margin="0,3"/>
@@ -370,6 +533,12 @@ $MainXaml = @'
           <Button x:Name="ExportButton"  Content="Exporteren (CSV)"    Padding="12,4" Margin="6,0,0,0"/>
           <CheckBox x:Name="DarkModeBox" Content="Donkere modus" VerticalAlignment="Center" Margin="16,0,0,0"/>
         </StackPanel>
+
+        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,8,0,0">
+          <TextBlock Text="ProfileUnity-configuratie:" VerticalAlignment="Center" FontWeight="SemiBold"/>
+          <ComboBox x:Name="PuConfigBox" Width="340" Margin="6,0"/>
+          <TextBlock x:Name="PuInfoText" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="{DynamicResource SubtleFg}"/>
+        </StackPanel>
       </Grid>
     </GroupBox>
 
@@ -380,6 +549,8 @@ $MainXaml = @'
       <ComboBox x:Name="ServerFilterBox" Width="160" Margin="6,0"/>
       <TextBlock Text="Niveau:" VerticalAlignment="Center" Margin="10,0,0,0"/>
       <ComboBox x:Name="LevelFilterBox" Width="110" Margin="6,0"/>
+      <TextBlock Text="Lijst:" VerticalAlignment="Center" Margin="10,0,0,0"/>
+      <ComboBox x:Name="ListFilterBox" Width="190" Margin="6,0"/>
       <TextBlock Text="Zoeken:" VerticalAlignment="Center" Margin="10,0,0,0"/>
       <TextBox x:Name="SearchBox" Width="240" Margin="6,0" VerticalContentAlignment="Center"/>
       <CheckBox x:Name="AppOnlyBox" Content="Alleen events met applicatie" VerticalAlignment="Center" Margin="10,0,0,0"/>
@@ -403,6 +574,7 @@ $MainXaml = @'
           <DataGridTextColumn Header="Niveau"     Binding="{Binding Niveau}"     Width="80"/>
           <DataGridTextColumn Header="Event ID"   Binding="{Binding EventID}"    Width="65"/>
           <DataGridTextColumn Header="Applicatie" Binding="{Binding Applicatie}" Width="260"/>
+          <DataGridTextColumn Header="Lijst"      Binding="{Binding Lijst}"      Width="150"/>
           <DataGridTextColumn Header="Bericht"    Binding="{Binding Samenvatting}" Width="*"/>
         </DataGrid.Columns>
       </DataGrid>
@@ -419,7 +591,8 @@ $MainXaml = @'
 $window = New-Xaml $MainXaml
 foreach ($name in 'StatusText','ServerPanel','SourcePanel','PeriodBox','MaxEventsBox','FetchButton',
                   'ConfigButton','SummaryButton','ExportButton','SourceFilterBox','ServerFilterBox',
-                  'LevelFilterBox','SearchBox','AppOnlyBox','EventGrid','DetailBox','DarkModeBox') {
+                  'LevelFilterBox','SearchBox','AppOnlyBox','EventGrid','DetailBox','DarkModeBox',
+                  'PuConfigBox','PuInfoText','ListFilterBox') {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
 }
 Initialize-Theme $window
@@ -493,6 +666,9 @@ function Update-FilterLists {
 
     $levels = @($script:Results | ForEach-Object { $_.Niveau }) | Where-Object { $_ } | Sort-Object -Unique
     Set-ComboItems $LevelFilterBox $levels
+
+    $lists = @($script:Results | ForEach-Object { $_.Lijst }) | Where-Object { $_ } | Sort-Object -Unique
+    Set-ComboItems $ListFilterBox $lists
 }
 
 function Get-VisibleItems {
@@ -515,10 +691,12 @@ $FilterPredicate = [Predicate[object]]{
     if ($srv -and $srv -ne $AllLabel -and $item.Server -ne $srv) { return $false }
     $lvl = $LevelFilterBox.SelectedItem
     if ($lvl -and $lvl -ne $AllLabel -and $item.Niveau -ne $lvl) { return $false }
+    $lst = $ListFilterBox.SelectedItem
+    if ($lst -and $lst -ne $AllLabel -and $item.Lijst -ne $lst) { return $false }
     if ($AppOnlyBox.IsChecked -and -not $item.Applicatie) { return $false }
     $q = $SearchBox.Text
     if (-not [string]::IsNullOrWhiteSpace($q)) {
-        $hay = "$($item.Server) $($item.Bron) $($item.EventID) $($item.Applicatie) $($item.Bericht)"
+        $hay = "$($item.Server) $($item.Bron) $($item.EventID) $($item.Applicatie) $($item.Lijst) $($item.Regel) $($item.Bericht)"
         if ($hay.IndexOf($q.Trim(), [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
     }
     return $true
@@ -571,13 +749,17 @@ function Invoke-Fetch {
                             # Geen berichttekst beschikbaar (bijv. message-DLL ontbreekt): ruwe eigenschappen tonen
                             $msg = (@($e.Properties | ForEach-Object { $_.Value }) -join ' | ')
                         }
+                        $app = Get-AppFromMessage $msg
+                        $pu  = Get-PuStatus $app
                         $list.Add([pscustomobject]@{
                             Tijd         = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
                             Server       = $server
                             Bron         = $e.ProviderName
                             Niveau       = $e.LevelDisplayName
                             EventID      = $e.Id
-                            Applicatie   = Get-AppFromMessage $msg
+                            Applicatie   = $app
+                            Lijst        = $pu.Lijst
+                            Regel        = $pu.Regel
                             Samenvatting = Get-FirstLine $msg
                             Logboek      = $e.LogName
                             Bericht      = $msg
@@ -619,7 +801,7 @@ function Invoke-Fetch {
 $ConfigXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Configuratie" Height="520" Width="720" ResizeMode="CanResize"
+        Title="Configuratie" Height="660" Width="760" ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner" FontFamily="Segoe UI" FontSize="12">
   <Grid Margin="10">
     <Grid.ColumnDefinitions>
@@ -629,6 +811,7 @@ $ConfigXaml = @'
     </Grid.ColumnDefinitions>
     <Grid.RowDefinitions>
       <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -655,14 +838,24 @@ $ConfigXaml = @'
       </DockPanel>
     </GroupBox>
 
-    <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,10,0,0">
+    <GroupBox Header="ProfileUnity-configuraties (JSON-export uit de ProfileUnity-console)" Grid.Row="1" Grid.ColumnSpan="3" Padding="6" Margin="0,10,0,0" Height="150">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
+          <Button x:Name="AddPuBtn" Content="Bladeren..." Padding="8,2"/>
+          <Button x:Name="RemovePuBtn" Content="Verwijderen" Padding="8,2" Margin="6,0,0,0"/>
+        </StackPanel>
+        <ListBox x:Name="PuList" SelectionMode="Extended"/>
+      </DockPanel>
+    </GroupBox>
+
+    <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,10,0,0">
       <TextBlock Text="Standaard periode (uren):" VerticalAlignment="Center"/>
       <TextBox x:Name="DefaultHoursBox" Width="60" Margin="6,0,20,0" VerticalContentAlignment="Center"/>
       <TextBlock Text="Standaard max. events per server/bron:" VerticalAlignment="Center"/>
       <TextBox x:Name="DefaultMaxBox" Width="60" Margin="6,0" VerticalContentAlignment="Center"/>
     </StackPanel>
 
-    <DockPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,12,0,0" LastChildFill="False">
+    <DockPanel Grid.Row="3" Grid.ColumnSpan="3" Margin="0,12,0,0" LastChildFill="False">
       <TextBlock x:Name="PathText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource SubtleFg}" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
       <Button x:Name="CancelBtn" Content="Annuleren" DockPanel.Dock="Right" Padding="14,4" Margin="6,0,0,0" IsCancel="True"/>
       <Button x:Name="SaveBtn" Content="Opslaan" DockPanel.Dock="Right" Padding="14,4" FontWeight="SemiBold"/>
@@ -686,6 +879,20 @@ function Remove-ListItems($Collection, $ListBox) {
     foreach ($sel in @($ListBox.SelectedItems)) { [void]$Collection.Remove($sel) }
 }
 
+function Add-PuConfigFile {
+    $ofd = New-Object Microsoft.Win32.OpenFileDialog
+    $ofd.Filter = 'ProfileUnity-configuratie (*.json)|*.json|Alle bestanden (*.*)|*.*'
+    $ofd.Multiselect = $true
+    $ofd.Title = 'ProfileUnity-configuratie (JSON) kiezen'
+    if ($ofd.ShowDialog()) {
+        foreach ($f in $ofd.FileNames) {
+            $exists = $false
+            foreach ($e in $script:Cfg.PuItems) { if ($e -ieq $f) { $exists = $true } }
+            if (-not $exists) { $script:Cfg.PuItems.Add($f) }
+        }
+    }
+}
+
 function Save-ConfigFromDialog {
     $c = $script:Cfg
     $h = 0; $m = 0
@@ -701,6 +908,12 @@ function Save-ConfigFromDialog {
         HoursBack = $h
         MaxEvents = $m
         DarkMode  = [bool]$script:Config.DarkMode
+        ProfileUnityConfigs      = @($c.PuItems)
+        ActiveProfileUnityConfig = ''
+    }
+    # Actieve ProfileUnity-config behouden als die nog in de lijst staat
+    foreach ($pu in $c.PuItems) {
+        if ($pu -ieq [string]$script:Config.ActiveProfileUnityConfig) { $new.ActiveProfileUnityConfig = $pu }
     }
     try {
         Save-Config $new
@@ -720,13 +933,17 @@ function Show-ConfigDialog {
     # Status van de dialoog in script-scope, zodat de event handlers erbij kunnen
     $c = @{ Dlg = $dlg; Saved = $false }
     foreach ($n in 'RemoveServerBtn','AddServerBtn','NewServerBox','ServerList','RemoveSourceBtn','AddSourceBtn',
-                   'NewSourceBox','SourceList','DefaultHoursBox','DefaultMaxBox','PathText','CancelBtn','SaveBtn') {
+                   'NewSourceBox','SourceList','DefaultHoursBox','DefaultMaxBox','PathText','CancelBtn','SaveBtn',
+                   'PuList','AddPuBtn','RemovePuBtn') {
         $c[$n] = $dlg.FindName($n)
     }
     $c.ServerItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
     $c.SourceItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
     foreach ($s in $script:Config.Servers) { $c.ServerItems.Add($s) }
     foreach ($s in $script:Config.Sources) { $c.SourceItems.Add($s) }
+    $c.PuItems = New-Object System.Collections.ObjectModel.ObservableCollection[string]
+    foreach ($s in $script:Config.ProfileUnityConfigs) { $c.PuItems.Add($s) }
+    $c.PuList.ItemsSource = $c.PuItems
     $c.ServerList.ItemsSource = $c.ServerItems
     $c.SourceList.ItemsSource = $c.SourceItems
     $c.DefaultHoursBox.Text = [string]$script:Config.HoursBack
@@ -743,6 +960,9 @@ function Show-ConfigDialog {
     $c.NewSourceBox.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Return') { Add-ListItem $script:Cfg.SourceItems $script:Cfg.NewSourceBox } })
     $c.ServerList.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Delete') { Remove-ListItems $script:Cfg.ServerItems $script:Cfg.ServerList } })
     $c.SourceList.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Delete') { Remove-ListItems $script:Cfg.SourceItems $script:Cfg.SourceList } })
+    $c.AddPuBtn.Add_Click({ Add-PuConfigFile })
+    $c.RemovePuBtn.Add_Click({ Remove-ListItems $script:Cfg.PuItems $script:Cfg.PuList })
+    $c.PuList.Add_KeyDown({ param($sender, $e) if ($e.Key -eq 'Delete') { Remove-ListItems $script:Cfg.PuItems $script:Cfg.PuList } })
     $c.SaveBtn.Add_Click({ Save-ConfigFromDialog })
     $c.CancelBtn.Add_Click({ $script:Cfg.Dlg.Close() })
 
@@ -771,11 +991,13 @@ function Show-Summary {
         $times = $g | ForEach-Object { $_.Tijd } | Sort-Object
         [pscustomobject]@{
             Applicatie  = $g[0].Applicatie
+            Lijst       = $g[0].Lijst
             Aantal      = $_.Count
             Servers     = (($g | ForEach-Object { $_.Server } | Sort-Object -Unique) -join ', ')
             Bronnen     = (($g | ForEach-Object { $_.Bron } | Sort-Object -Unique) -join ', ')
             EersteKeer  = $times[0]
             LaatsteKeer = $times[-1]
+            Regel       = $g[0].Regel
         }
     } | Sort-Object Aantal -Descending
 
@@ -823,6 +1045,52 @@ function Export-Rows($Rows, [string]$BaseName) {
 }
 
 # ---------------------------------------------------------------------------
+# ProfileUnity-configuratie koppelen aan de resultaten
+# ---------------------------------------------------------------------------
+function Update-PuConfigBox {
+    $script:PuPopulating = $true
+    try {
+        $PuConfigBox.Items.Clear()
+        $none = New-Object System.Windows.Controls.ComboBoxItem
+        $none.Content = '(geen)'; $none.Tag = ''
+        [void]$PuConfigBox.Items.Add($none)
+        $PuConfigBox.SelectedItem = $none
+        foreach ($f in $script:Config.ProfileUnityConfigs) {
+            $ci = New-Object System.Windows.Controls.ComboBoxItem
+            $ci.Content = Split-Path -Path $f -Leaf
+            $ci.Tag     = $f
+            $ci.ToolTip = $f
+            [void]$PuConfigBox.Items.Add($ci)
+            if ($f -ieq [string]$script:Config.ActiveProfileUnityConfig) { $PuConfigBox.SelectedItem = $ci }
+        }
+    } finally {
+        $script:PuPopulating = $false
+    }
+}
+
+function Set-ActivePuConfig {
+    $path = [string]$script:Config.ActiveProfileUnityConfig
+    if ($path) { Set-Status "ProfileUnity-configuratie laden: $path ..." }
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try {
+        Import-PuConfig $path
+    } finally {
+        $window.Cursor = $null
+    }
+    $PuInfoText.Text = $script:PuInfo
+    # Bestaande resultaten opnieuw beoordelen
+    foreach ($item in $script:Results) {
+        $s = Get-PuStatus $item.Applicatie
+        $item.Lijst = $s.Lijst
+        $item.Regel = $s.Regel
+    }
+    $EventGrid.Items.Refresh()
+    Update-FilterLists
+    Invoke-Refilter
+    if (-not $path) { Update-Count }
+}
+
+# ---------------------------------------------------------------------------
 # Events koppelen
 # ---------------------------------------------------------------------------
 $FetchButton.Add_Click({ Invoke-Fetch })
@@ -830,7 +1098,8 @@ $FetchButton.Add_Click({ Invoke-Fetch })
 $ConfigButton.Add_Click({
     if (Show-ConfigDialog) {
         Update-SelectionPanels
-        Update-FilterLists
+        Update-PuConfigBox
+        Set-ActivePuConfig
         $StatusText.Text = 'Configuratie opgeslagen.'
     }
 })
@@ -846,19 +1115,30 @@ $DarkModeBox.Add_Click({
 $ExportButton.Add_Click({
     $visible = Get-VisibleItems
     if ($visible.Count -eq 0) { [System.Windows.MessageBox]::Show('Er is niets om te exporteren.', 'Export') | Out-Null; return }
-    Export-Rows ($visible | Select-Object Tijd, Server, Bron, Niveau, EventID, Applicatie, Logboek, Bericht) 'Liquidware-events'
+    Export-Rows ($visible | Select-Object Tijd, Server, Bron, Niveau, EventID, Applicatie, Lijst, Regel, Logboek, Bericht) 'Liquidware-events'
 })
 
 $SourceFilterBox.Add_SelectionChanged({ Invoke-Refilter })
 $ServerFilterBox.Add_SelectionChanged({ Invoke-Refilter })
 $LevelFilterBox.Add_SelectionChanged({ Invoke-Refilter })
+$ListFilterBox.Add_SelectionChanged({ Invoke-Refilter })
+
+$PuConfigBox.Add_SelectionChanged({
+    if ($script:PuPopulating) { return }
+    $sel = $PuConfigBox.SelectedItem
+    $path = ''
+    if ($sel) { $path = [string]$sel.Tag }
+    $script:Config.ActiveProfileUnityConfig = $path
+    try { Save-Config $script:Config } catch { }
+    Set-ActivePuConfig
+})
 $SearchBox.Add_TextChanged({ Invoke-Refilter })
 $AppOnlyBox.Add_Click({ Invoke-Refilter })
 
 $EventGrid.Add_SelectionChanged({
     $sel = $EventGrid.SelectedItem
     if ($sel) {
-        $DetailBox.Text = "Tijd:       $($sel.Tijd)`r`nServer:     $($sel.Server)`r`nBron:       $($sel.Bron)`r`nLogboek:    $($sel.Logboek)`r`nNiveau:     $($sel.Niveau)`r`nEvent ID:   $($sel.EventID)`r`nApplicatie: $($sel.Applicatie)`r`n`r`n$($sel.Bericht)"
+        $DetailBox.Text = "Tijd:       $($sel.Tijd)`r`nServer:     $($sel.Server)`r`nBron:       $($sel.Bron)`r`nLogboek:    $($sel.Logboek)`r`nNiveau:     $($sel.Niveau)`r`nEvent ID:   $($sel.EventID)`r`nApplicatie: $($sel.Applicatie)`r`nLijst:      $($sel.Lijst)`r`nRegel(s):   $($sel.Regel)`r`n`r`n$($sel.Bericht)"
     } else {
         $DetailBox.Text = ''
     }
@@ -869,5 +1149,7 @@ $EventGrid.Add_SelectionChanged({
 # ---------------------------------------------------------------------------
 Update-SelectionPanels
 Set-Results @()
+Update-PuConfigBox
+Set-ActivePuConfig
 $StatusText.Text = "Gereed. Configuratie: $ConfigPath"
 [void]$window.ShowDialog()
