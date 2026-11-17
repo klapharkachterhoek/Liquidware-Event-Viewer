@@ -151,7 +151,14 @@ function Import-PuConfig([string]$Path) {
     $script:PuHasSignedAllow = $false
     $script:PuCache    = @{}
     $script:PuInfo     = ''
-    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        if (@($script:Config.ProfileUnityConfigs).Count -gt 0) {
+            $script:PuInfo = 'Kies hierboven een configuratie om de kolom Lijst te vullen'
+        } else {
+            $script:PuInfo = 'Voeg via Configuratie... een ProfileUnity JSON-export toe om de kolom Lijst te vullen'
+        }
+        return
+    }
     if (-not (Test-Path -LiteralPath $Path)) {
         $script:PuInfo = 'Bestand niet gevonden'
         return
@@ -914,6 +921,10 @@ function Save-ConfigFromDialog {
     # Actieve ProfileUnity-config behouden als die nog in de lijst staat
     foreach ($pu in $c.PuItems) {
         if ($pu -ieq [string]$script:Config.ActiveProfileUnityConfig) { $new.ActiveProfileUnityConfig = $pu }
+    }
+    # Nog geen actieve config gekozen: automatisch de eerste uit de lijst gebruiken
+    if (-not $new.ActiveProfileUnityConfig -and $c.PuItems.Count -gt 0) {
+        $new.ActiveProfileUnityConfig = $c.PuItems[0]
     }
     try {
         Save-Config $new
