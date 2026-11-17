@@ -1,0 +1,10 @@
+{
+    "Servers": [],
+    "Sources": [
+        "liquidware application restriction",
+        "Liquidware data service",
+        "Liquidware Events and Metrics Service"
+    ],
+    "HoursBack": 24,
+    "MaxEvents": 500
+}
